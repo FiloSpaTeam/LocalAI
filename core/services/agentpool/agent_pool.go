@@ -20,6 +20,7 @@ import (
 	"github.com/mudler/LocalAI/core/services/distributed"
 	"github.com/mudler/LocalAI/core/services/messaging"
 	skillsManager "github.com/mudler/LocalAI/core/services/skills"
+	"github.com/mudler/LocalAI/pkg/httpclient"
 
 	"github.com/mudler/LocalAGI/core/agent"
 	"github.com/mudler/LocalAGI/core/conversations"
@@ -333,6 +334,8 @@ func (s *AgentPoolService) startLocalAGI(_ context.Context, cfg config.AgentPool
 	if err != nil {
 		return fmt.Errorf("failed to create agent pool: %w", err)
 	}
+	pool.SetSubAgentResolver(resolvePoolSubAgent)
+	pool.SetRemoteAgentHTTPClient(httpclient.New())
 	s.localAGI.pool = pool
 
 	// Create in-process collections backend and RAG provider
@@ -423,105 +426,39 @@ func (s *AgentPoolService) GetAgent(name string) *agent.Agent {
 
 // Chat sends a message to an agent and returns immediately. Responses come via SSE.
 func (s *AgentPoolService) Chat(name, message string) (string, error) {
-	ag := s.localAGI.pool.GetAgent(name)
-	if ag == nil {
-		return "", fmt.Errorf("%w: %s", ErrAgentNotFound, name)
+	receipt, err := s.chatInConversation(name, message, "")
+	return receipt.MessageID, err
+}
+
+func (s *AgentPoolService) decorateChatResponse(name, message string, response *coreTypes.JobResult, elapsed time.Duration) map[string]any {
+	outcome := "completed"
+	if response == nil {
+		outcome = "cancelled"
+	} else if response.Error != nil {
+		outcome = "error"
 	}
-	manager := s.localAGI.pool.GetManager(name)
-	if manager == nil {
-		return "", fmt.Errorf("SSE manager not found for agent: %s", name)
+	recordAgentRun(name, outcome, elapsed.Seconds())
+	if response == nil || response.Error != nil {
+		return nil
 	}
-
-	messageID := fmt.Sprintf("%d", time.Now().UnixNano())
-
-	// Send user message via SSE
-	userMsg, _ := json.Marshal(map[string]any{
-		"id":        messageID + "-user",
-		"sender":    "user",
-		"content":   message,
-		"timestamp": time.Now().Format(time.RFC3339),
-	})
-	manager.Send(sse.NewMessage(string(userMsg)).WithEvent("json_message"))
-
-	// Send processing status
-	statusMsg, _ := json.Marshal(map[string]any{
-		"status":    "processing",
-		"timestamp": time.Now().Format(time.RFC3339),
-	})
-	manager.Send(sse.NewMessage(string(statusMsg)).WithEvent("json_message_status"))
-
-	// Process asynchronously
-	go func() {
-		started := time.Now()
-		response := ag.Ask(coreTypes.WithText(message))
-		outcome := "completed"
-		if response == nil {
-			outcome = "cancelled"
-		} else if response.Error != nil {
-			outcome = "error"
-		}
-		recordAgentRun(name, outcome, time.Since(started).Seconds())
-
-		if response == nil {
-			errMsg, _ := json.Marshal(map[string]any{
-				"error":     "agent request failed or was cancelled",
-				"timestamp": time.Now().Format(time.RFC3339),
-			})
-			manager.Send(sse.NewMessage(string(errMsg)).WithEvent("json_error"))
-		} else if response.Error != nil {
-			errMsg, _ := json.Marshal(map[string]any{
-				"error":     response.Error.Error(),
-				"timestamp": time.Now().Format(time.RFC3339),
-			})
-			manager.Send(sse.NewMessage(string(errMsg)).WithEvent("json_error"))
-		} else {
-			// Collect metadata from all action states
-			metadata := map[string]any{}
-			for _, state := range response.State {
-				for k, v := range state.Metadata {
-					if existing, ok := metadata[k]; ok {
-						if existList, ok := existing.([]string); ok {
-							if newList, ok := v.([]string); ok {
-								metadata[k] = append(existList, newList...)
-								continue
-							}
-						}
-					}
-					metadata[k] = v
+	metadata := map[string]any{}
+	for _, state := range response.State {
+		for k, v := range state.Metadata {
+			if existing, ok := metadata[k].([]string); ok {
+				if next, ok := v.([]string); ok {
+					metadata[k] = append(existing, next...)
+					continue
 				}
 			}
-
-			if len(metadata) > 0 {
-				// Extract userID from the agent key (format: "userID:agentName")
-				var chatUserID string
-				if uid, _, ok := strings.Cut(name, ":"); ok {
-					chatUserID = uid
-				}
-				s.collectAndCopyMetadata(metadata, chatUserID)
-			}
-
-			content := s.appendLocalAGIKBCitations(response.Response, name, message, response.State)
-			msg := map[string]any{
-				"id":        messageID + "-agent",
-				"sender":    "agent",
-				"content":   content,
-				"timestamp": time.Now().Format(time.RFC3339),
-			}
-			if len(metadata) > 0 {
-				msg["metadata"] = metadata
-			}
-			respMsg, _ := json.Marshal(msg)
-			manager.Send(sse.NewMessage(string(respMsg)).WithEvent("json_message"))
+			metadata[k] = v
 		}
-
-		completedMsg, _ := json.Marshal(map[string]any{
-			"status":    "completed",
-			"timestamp": time.Now().Format(time.RFC3339),
-		})
-		manager.Send(sse.NewMessage(string(completedMsg)).WithEvent("json_message_status"))
-	}()
-
-	return messageID, nil
+	}
+	if len(metadata) > 0 {
+		userID, _ := splitAgentKey(name)
+		s.collectAndCopyMetadata(metadata, userID)
+	}
+	response.Response = s.appendLocalAGIKBCitations(response.Response, name, message, response.State)
+	return metadata
 }
 
 func (s *AgentPoolService) appendLocalAGIKBCitations(response, agentKey, message string, states []coreTypes.ActionState) string {

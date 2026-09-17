@@ -7,6 +7,7 @@ import UnsavedChangesGuard from '../components/UnsavedChangesGuard'
 import { CAP_CHAT, CAP_TRANSCRIPT, CAP_TTS } from '../utils/capabilities'
 import Toggle from '../components/Toggle'
 import SettingRow from '../components/SettingRow'
+import AgentDelegationFields from '../components/AgentDelegationFields'
 
 // --- MCP STDIO helpers ---
 
@@ -262,8 +263,8 @@ const SECTIONS = [
   { id: 'dynamic_prompts', icon: 'fa-wand-magic-sparkles', label: 'Dynamic Prompts' },
 ]
 
-// Fields handled by custom editors in the MCP section
-const CUSTOM_FIELDS = new Set(['mcp_stdio_servers'])
+// Structured fields handled by dedicated editors.
+const CUSTOM_FIELDS = new Set(['mcp_stdio_servers', 'sub_agents', 'remote_agents'])
 
 // Fields not implemented in the native executor (distributed mode).
 // These are hidden from the form when meta.distributed is true.
@@ -278,6 +279,8 @@ const HIDDEN_IN_DISTRIBUTED = new Set([
   'disable_sink_state', // always disabled in native executor
   'enable_kb_compaction', 'kb_compaction_interval', 'kb_compaction_summarize',
   'parallel_jobs', 'cancel_previous_on_new_message',
+  'enable_user_questions', 'require_plan_approval',
+  'enable_sub_agents', 'sub_agents', 'remote_agents',
 ])
 
 // --- Main component ---
@@ -358,6 +361,8 @@ export default function AgentCreate() {
             }
           }
         }
+        initialForm.sub_agents = []
+        initialForm.remote_agents = []
 
         // Override with existing config when editing or importing
         const sourceConfig = config || importedConfig
@@ -375,6 +380,10 @@ export default function AgentCreate() {
           setMcpHttpServers(Array.isArray(sourceConfig.mcp_servers) ? sourceConfig.mcp_servers : [])
           setStdioServers(parseStdioServers(sourceConfig.mcp_stdio_servers))
           if (Array.isArray(sourceConfig.selected_skills)) setSelectedSkills(sourceConfig.selected_skills)
+          initialForm.sub_agents = Array.isArray(sourceConfig.sub_agents) ? [...sourceConfig.sub_agents] : []
+          initialForm.remote_agents = Array.isArray(sourceConfig.remote_agents)
+            ? sourceConfig.remote_agents.map(remote => ({ ...remote }))
+            : []
         }
 
         initialFormRef.current = initialForm
@@ -495,6 +504,14 @@ export default function AgentCreate() {
         return (
           <>
             {renderFieldSection(activeSection)}
+            {activeSection === 'AdvancedSettings' && !meta?.distributed && form.enable_sub_agents && (
+              <AgentDelegationFields
+                subAgents={form.sub_agents}
+                remoteAgents={form.remote_agents}
+                onSubAgentsChange={(subAgents) => updateField('sub_agents', subAgents)}
+                onRemoteAgentsChange={(remoteAgents) => updateField('remote_agents', remoteAgents)}
+              />
+            )}
             {/* Skills picker — shown only in AdvancedSettings when enable_skills is checked */}
             {activeSection === 'AdvancedSettings' && form.enable_skills && availableSkills.length > 0 && (
               <div style={{ marginTop: 'var(--spacing-lg)', borderTop: '1px solid var(--color-border)', paddingTop: 'var(--spacing-lg)' }}>
@@ -846,6 +863,33 @@ export default function AgentCreate() {
           position: sticky;
           top: var(--spacing-md);
         }
+        .agent-delegation-fields {
+          border-top: 1px solid var(--color-border);
+          display: grid;
+          gap: var(--spacing-lg);
+          margin-top: var(--spacing-lg);
+          padding-top: var(--spacing-lg);
+        }
+        .agent-delegation-block {
+          min-width: 0;
+        }
+        .delegation-grow {
+          flex: 1;
+          min-width: 0;
+        }
+        .delegation-remote-card {
+          border: 1px solid var(--color-border);
+          border-radius: var(--radius-md);
+          padding: var(--spacing-md);
+        }
+        .delegation-field-grid {
+          display: grid;
+          gap: var(--spacing-sm) var(--spacing-md);
+          grid-template-columns: repeat(2, minmax(0, 1fr));
+        }
+        .delegation-field-wide {
+          grid-column: 1 / -1;
+        }
         .agent-wizard-nav-item {
           display: flex;
           align-items: center;
@@ -914,6 +958,12 @@ export default function AgentCreate() {
           margin-bottom: 0;
         }
         @media (max-width: 768px) {
+          .delegation-field-grid {
+            grid-template-columns: 1fr;
+          }
+          .delegation-field-wide {
+            grid-column: auto;
+          }
           .agent-form-container {
             flex-direction: column;
           }

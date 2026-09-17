@@ -78,8 +78,8 @@ var instructionDefs = []instructionDef{
 	},
 	{
 		Name:        "agents",
-		Description: "Agent task and job management for CI/automation workflows",
-		Tags:        []string{"agent-jobs"},
+		Description: "Interactive agents and agent task management for CI/automation workflows",
+		Tags:        []string{"agents", "agent-jobs"},
 	},
 	{
 		Name:        "video",

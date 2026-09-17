@@ -10,6 +10,7 @@ import ConfirmDialog from '../components/ConfirmDialog'
 import { useAgentChat } from '../hooks/useAgentChat'
 import { relativeTime, normalizeTimestampMs } from '../utils/format'
 import { copyToClipboard } from '../utils/clipboard'
+import { AgentPlanCard, AgentQuestionCard, SubAgentActivity } from '../components/AgentInteractions'
 
 function getLastMessagePreview(conv) {
   if (!conv.messages || conv.messages.length === 0) return ''
@@ -80,12 +81,12 @@ export default function AgentChat() {
     conversations, activeConversation, activeId,
     addConversation, switchConversation, deleteConversation,
     deleteAllConversations, renameConversation, addMessage, addMessageToConversation, clearMessages,
+    removeMessageFromConversation, updateConversation, upsertInteraction, resolveInteraction, setInteractionError,
   } = useAgentChat(name)
 
   const messages = activeConversation?.messages || []
 
   const [input, setInput] = useState('')
-  const [processingChatId, setProcessingChatId] = useState(null)
   const [canvasMode, setCanvasMode] = useState(false)
   const [canvasOpen, setCanvasOpen] = useState(false)
   const [selectedArtifactId, setSelectedArtifactId] = useState(null)
@@ -94,9 +95,9 @@ export default function AgentChat() {
   const [editName, setEditName] = useState('')
   const [chatSearch, setChatSearch] = useState('')
   const [confirmDialog, setConfirmDialog] = useState(null)
-  const [streamContent, setStreamContent] = useState('')
-  const [streamReasoning, setStreamReasoning] = useState('')
-  const [streamToolCalls, setStreamToolCalls] = useState([])
+  const streamContent = activeConversation?.stream?.content || ''
+  const streamReasoning = activeConversation?.stream?.reasoning || ''
+  const streamToolCalls = activeConversation?.stream?.toolCalls || []
   const messagesEndRef = useRef(null)
   const messagesRef = useRef(null)
   const textareaRef = useRef(null)
@@ -109,17 +110,83 @@ export default function AgentChat() {
   addMessageToConvRef.current = addMessageToConversation
   const activeIdRef = useRef(activeId)
   activeIdRef.current = activeId
+  const conversationsRef = useRef(conversations)
+  conversationsRef.current = conversations
   // Tracks which conversation initiated the current request — SSE responses
   // are pinned to this ID so switching tabs doesn't misdirect them.
   const processingChatIdRef = useRef(null)
   // Maps backend messageID → conversationId for robust SSE routing across navigations.
   const pendingRequestsRef = useRef(new Map())
+  const interactionRevisionRef = useRef(0)
+  const timelineSequenceRef = useRef(0)
+  const nextTimelineOrder = useCallback(() => {
+    timelineSequenceRef.current += 1
+    return Date.now() * 1000 + timelineSequenceRef.current
+  }, [])
 
-  const processing = processingChatId === activeId
+  const processing = activeConversation?.status === 'processing'
+  const waitingAgents = activeConversation?.status === 'waiting_agents'
+  const activeQuestion = (activeConversation?.interactions || []).find(item => item.type === 'question' && !item.resolved)
+
+  const updateConversationRef = useRef(updateConversation)
+  updateConversationRef.current = updateConversation
+  const upsertInteractionRef = useRef(upsertInteraction)
+  upsertInteractionRef.current = upsertInteraction
+
+  const eventConversationId = useCallback((data = {}) => {
+    if (data.conversation_id) return data.conversation_id
+    const messageId = String(data.message_id || '').replace(/-agent$/, '')
+    return pendingRequestsRef.current.get(messageId) || processingChatIdRef.current || activeIdRef.current
+  }, [])
+
+  const reconcilePending = useCallback(async (conversationId) => {
+    if (!conversationId) return
+    const requestRevision = interactionRevisionRef.current
+    try {
+      const pending = await agentsApi.pending(name, conversationId, userId)
+      if (requestRevision !== interactionRevisionRef.current) {
+        reconcilePendingRef.current(conversationId)
+        return
+      }
+      const pendingKeys = new Set()
+      for (const question of pending?.questions || []) {
+        const targetId = question.conversation_id || conversationId
+        pendingKeys.add(`question:${question.id}`)
+        upsertInteractionRef.current(targetId, { ...question, type: 'question', resolved: false, timelineOrder: nextTimelineOrder() })
+        updateConversationRef.current(targetId, { status: 'waiting_user' })
+      }
+      if (pending?.plan) {
+        const targetId = pending.plan.conversation_id || conversationId
+        pendingKeys.add(`plan:${pending.plan.id}`)
+        upsertInteractionRef.current(targetId, { ...pending.plan, type: 'plan', resolved: false, timelineOrder: nextTimelineOrder() })
+        updateConversationRef.current(targetId, { status: 'waiting_user' })
+      }
+      updateConversationRef.current(conversationId, conversation => {
+        const interactions = (conversation.interactions || []).map(item => (
+          !item.resolved && !pendingKeys.has(`${item.type}:${item.id}`) &&
+          // The API returns all questions but only the oldest pending plan.
+          (item.type !== 'plan' || !pending?.plan)
+            ? { ...item, resolved: true, resolution: { status: 'no_longer_pending' } }
+            : item
+        ))
+        const hasPending = interactions.some(item => !item.resolved)
+        return {
+          interactions,
+          status: !hasPending && conversation.status === 'waiting_user' ? 'completed' : conversation.status,
+        }
+      })
+    } catch (err) {
+      if (err.status === 501) return
+      addToast(`Could not recover pending agent input: ${err.message}`, 'error')
+    }
+  }, [name, userId, addToast, nextTimelineOrder])
+
+  const reconcilePendingRef = useRef(reconcilePending)
+  reconcilePendingRef.current = reconcilePending
 
   const nextId = useCallback(() => {
     messageIdCounter.current += 1
-    return messageIdCounter.current
+    return `local:${Date.now()}:${messageIdCounter.current}`
   }, [])
 
   // Connect to SSE endpoint — only reconnect when agent name changes
@@ -127,6 +194,18 @@ export default function AgentChat() {
     const url = apiUrl(agentsApi.sseUrl(name, userId))
     const es = new EventSource(url)
     eventSourceRef.current = es
+    es.addEventListener('open', () => {
+      const conversationId = activeIdRef.current
+      for (const conversation of conversationsRef.current) {
+        if (conversation.status === 'processing') {
+          updateConversationRef.current(conversation.id, {
+            status: 'completed',
+            stream: { content: '', reasoning: '', toolCalls: [] },
+          })
+        }
+      }
+      reconcilePendingRef.current(conversationId)
+    })
 
     es.addEventListener('json_message', (e) => {
       try {
@@ -135,31 +214,31 @@ export default function AgentChat() {
         // Skip user message echoes — already added locally in handleSend
         if (sender === 'user') return
         const msg = {
-          id: nextId(),
+          id: data.id
+            ? `server:${data.id}`
+            : data.message_id ? `server:${data.message_id}:${sender}` : nextId(),
           sender,
           content: data.content || data.message || '',
           // Backend timestamp encoding varies by deploy mode (RFC3339 string,
           // Unix ms, or Unix ns); normalize to JS milliseconds.
           timestamp: normalizeTimestampMs(data.timestamp),
+          timelineOrder: nextTimelineOrder(),
         }
         if (data.metadata && Object.keys(data.metadata).length > 0) {
           msg.metadata = data.metadata
         }
-        // Route to conversation: try messageID mapping first, then processingChatIdRef, then active
         const msgId = data.message_id || ''
         const baseId = msgId.replace(/-agent$/, '')
-        const targetId = pendingRequestsRef.current.get(baseId)
-          || processingChatIdRef.current
-          || activeIdRef.current
+        const targetId = eventConversationId(data)
         addMessageToConvRef.current(targetId, msg)
         // Clear streaming + processing state when the final agent message arrives
         if (sender === 'agent') {
           pendingRequestsRef.current.delete(baseId)
           processingChatIdRef.current = null
-          setProcessingChatId(null)
-          setStreamContent('')
-          setStreamReasoning('')
-          setStreamToolCalls([])
+          updateConversationRef.current(targetId, {
+            status: 'completed',
+            stream: { content: '', reasoning: '', toolCalls: [] },
+          })
         }
       } catch (_err) {
         // ignore malformed messages
@@ -169,21 +248,24 @@ export default function AgentChat() {
     es.addEventListener('json_message_status', (e) => {
       try {
         const data = JSON.parse(e.data)
+        const targetId = eventConversationId(data)
         if (data.status === 'processing') {
           // Track which conversation is processing so responses go to the right place.
           // Only set if not already pinned by handleSend (avoids race when user switches conversations).
           if (!processingChatIdRef.current) {
-            processingChatIdRef.current = activeIdRef.current
-            setProcessingChatId(activeIdRef.current)
+            processingChatIdRef.current = targetId
           }
-          setStreamContent('')
-          setStreamReasoning('')
-          setStreamToolCalls([])
+          updateConversationRef.current(targetId, {
+            status: 'processing',
+            stream: { content: '', reasoning: '', toolCalls: [] },
+          })
+        } else if (data.status === 'waiting_user' || data.status === 'waiting_agents') {
+          updateConversationRef.current(targetId, { status: data.status })
         } else if (data.status === 'completed') {
-          // Don't clear processingChatIdRef, processingChatId, or streaming state here —
-          // they'll be cleared when the agent's json_message arrives,
-          // so reasoning and tool calls remain visible until the response replaces them
-          // and late-arriving messages still route to the correct conversation.
+          updateConversationRef.current(targetId, { status: 'completed' })
+        } else if (data.status === 'failed' || data.status === 'error' || data.status === 'canceled' || data.status === 'cancelled') {
+          updateConversationRef.current(targetId, { status: 'completed' })
+          reconcilePendingRef.current(targetId)
         }
       } catch (_err) {
         // ignore
@@ -193,31 +275,42 @@ export default function AgentChat() {
     es.addEventListener('stream_event', (e) => {
       try {
         const data = JSON.parse(e.data)
+        const targetId = eventConversationId(data)
         if (data.type === 'reasoning') {
-          setStreamReasoning(prev => prev + (data.content || ''))
+          updateConversationRef.current(targetId, conversation => {
+            const stream = conversation.stream || { content: '', reasoning: '', toolCalls: [] }
+            return { stream: { ...stream, reasoning: stream.reasoning + (data.content || '') } }
+          })
         } else if (data.type === 'content') {
-          setStreamContent(prev => prev + (data.content || ''))
+          updateConversationRef.current(targetId, conversation => {
+            const stream = conversation.stream || { content: '', reasoning: '', toolCalls: [] }
+            return { stream: { ...stream, content: stream.content + (data.content || '') } }
+          })
         } else if (data.type === 'tool_call') {
           const name = data.tool_name || ''
           const args = data.tool_args || ''
-          setStreamToolCalls(prev => {
+          updateConversationRef.current(targetId, conversation => {
+            const stream = conversation.stream || { content: '', reasoning: '', toolCalls: [] }
+            const prev = stream.toolCalls || []
             if (name) {
-              return [...prev, { name, args }]
+              return { stream: { ...stream, toolCalls: [...prev, { name, args }] } }
             }
-            if (prev.length === 0) return prev
+            if (prev.length === 0) return {}
             const updated = [...prev]
             updated[updated.length - 1] = { ...updated[updated.length - 1], args: updated[updated.length - 1].args + args }
-            return updated
+            return { stream: { ...stream, toolCalls: updated } }
           })
         } else if (data.type === 'tool_result') {
           const tname = data.tool_name || ''
-          setStreamToolCalls(prev => {
+          updateConversationRef.current(targetId, conversation => {
+            const stream = conversation.stream || { content: '', reasoning: '', toolCalls: [] }
+            const prev = stream.toolCalls || []
             const updated = [...prev]
             const idx = updated.findLastIndex(tc => tc.name === tname && !tc.result)
             if (idx >= 0) {
               updated[idx] = { ...updated[idx], result: data.tool_result || 'done' }
             }
-            return updated
+            return { stream: { ...stream, toolCalls: updated } }
           })
         } else if (data.type === 'done') {
           // One agent turn runs several internal LLM generations (tool
@@ -226,8 +319,9 @@ export default function AgentChat() {
           // text so an internal generation's output doesn't merge into the
           // next one's bubble — the final json_message carries the
           // authoritative full answer anyway.
-          setStreamContent('')
-          setStreamReasoning('')
+          updateConversationRef.current(targetId, conversation => ({
+            stream: { ...(conversation.stream || {}), content: '', reasoning: '' },
+          }))
         }
       } catch (_err) {
         // ignore
@@ -237,29 +331,76 @@ export default function AgentChat() {
     es.addEventListener('status', (e) => {
       const text = e.data
       if (!text) return
-      const targetId = processingChatIdRef.current || activeIdRef.current
+      let data = {}
+      try { data = JSON.parse(text) } catch { data = { message: text } }
+      const targetId = eventConversationId(data)
       addMessageToConvRef.current(targetId, {
         id: nextId(),
         sender: 'system',
-        content: text,
+        content: data.message || data.status || text,
         timestamp: Date.now(),
+        timelineOrder: nextTimelineOrder(),
       })
     })
 
     es.addEventListener('json_error', (e) => {
+      let targetId = activeIdRef.current
       try {
         const data = JSON.parse(e.data)
+        targetId = eventConversationId(data)
         addToast(data.error || data.message || 'Agent error', 'error')
       } catch (_err) {
         addToast('Agent error', 'error')
       }
       processingChatIdRef.current = null
-      setProcessingChatId(null)
+      updateConversationRef.current(targetId, { status: 'completed' })
+      reconcilePendingRef.current(targetId)
     })
 
     es.onerror = () => {
       addToast('SSE connection lost, attempting to reconnect...', 'warning')
     }
+
+    es.addEventListener('question', (e) => {
+      try {
+        const data = JSON.parse(e.data)
+        const targetId = eventConversationId(data)
+        interactionRevisionRef.current += 1
+        upsertInteractionRef.current(targetId, { ...data, type: 'question', resolved: false, timelineOrder: nextTimelineOrder() })
+        updateConversationRef.current(targetId, { status: 'waiting_user' })
+      } catch (_err) { /* ignore malformed messages */ }
+    })
+
+    es.addEventListener('plan', (e) => {
+      try {
+        const data = JSON.parse(e.data)
+        const targetId = eventConversationId(data)
+        interactionRevisionRef.current += 1
+        upsertInteractionRef.current(targetId, { ...data, type: 'plan', resolved: false, timelineOrder: nextTimelineOrder() })
+        updateConversationRef.current(targetId, { status: 'waiting_user' })
+      } catch (_err) { /* ignore malformed messages */ }
+    })
+
+    es.addEventListener('sub_agent', (e) => {
+      try {
+        const data = JSON.parse(e.data)
+        const targetId = eventConversationId(data)
+        updateConversationRef.current(targetId, conversation => {
+          const current = conversation.subAgents || []
+          const index = current.findIndex(item => item.agent_id === data.agent_id)
+          const eventTimestamp = normalizeTimestampMs(data.timestamp)
+          const timed = {
+            ...data,
+            timestamp: eventTimestamp,
+            ...(data.status === 'spawned' ? { spawned_at: eventTimestamp } : { completed_at: eventTimestamp }),
+          }
+          if (index < 0) return { subAgents: [...current, timed] }
+          const subAgents = [...current]
+          subAgents[index] = { ...subAgents[index], ...timed }
+          return { subAgents }
+        })
+      } catch (_err) { /* ignore malformed messages */ }
+    })
 
     return () => {
       es.close()
@@ -267,7 +408,11 @@ export default function AgentChat() {
       processingChatIdRef.current = null
       pendingRequestsRef.current.clear()
     }
-  }, [name, userId, addToast, nextId])
+  }, [name, userId, addToast, nextId, nextTimelineOrder, eventConversationId])
+
+  useEffect(() => {
+    reconcilePending(activeId)
+  }, [activeId, reconcilePending])
 
   // Track whether the user is pinned to the bottom. If they scroll up
   // while a response is streaming, stop forcing them back down.
@@ -376,27 +521,91 @@ export default function AgentChat() {
     setCanvasOpen(true)
   }, [])
 
+  const handleAnswer = useCallback(async (interaction, answer) => {
+    setInteractionError(activeId, 'question', interaction.id, '')
+    updateConversation(activeId, { status: 'processing' })
+    try {
+      await agentsApi.answer(name, {
+        question_id: interaction.id,
+        selected: answer.selected,
+        text: answer.text,
+      }, userId)
+      interactionRevisionRef.current += 1
+      resolveInteraction(activeId, 'question', interaction.id, answer)
+    } catch (err) {
+      setInteractionError(activeId, 'question', interaction.id, err.message)
+      updateConversation(activeId, conversation => ({
+        status: conversation.status === 'processing' ? 'waiting_user' : conversation.status,
+      }))
+      throw err
+    }
+  }, [activeId, name, userId, resolveInteraction, setInteractionError, updateConversation])
+
+  const handlePlanDecision = useCallback(async (interaction, decision) => {
+    setInteractionError(activeId, 'plan', interaction.id, '')
+    const optimisticStatus = decision.resolution === 'rejected' ? 'completed' : 'processing'
+    updateConversation(activeId, { status: optimisticStatus })
+    try {
+      await agentsApi.decidePlan(name, {
+        plan_id: interaction.id,
+        approved: decision.approved,
+        subtasks: decision.subtasks,
+        feedback: decision.feedback,
+      }, userId)
+      interactionRevisionRef.current += 1
+      resolveInteraction(activeId, 'plan', interaction.id, {
+        status: decision.resolution,
+        feedback: decision.feedback,
+        subtasks: decision.subtasks,
+      })
+      reconcilePendingRef.current(activeId)
+    } catch (err) {
+      setInteractionError(activeId, 'plan', interaction.id, err.message)
+      updateConversation(activeId, conversation => ({
+        status: conversation.status === optimisticStatus ? 'waiting_user' : conversation.status,
+      }))
+      throw err
+    }
+  }, [activeId, name, userId, resolveInteraction, setInteractionError, updateConversation])
+
   const handleSend = useCallback(async () => {
     const msg = input.trim()
     if (!msg || processing) return
     setInput('')
     if (textareaRef.current) textareaRef.current.style.height = 'auto'
     // Add user message locally immediately (like standard chat)
-    addMessage({ id: nextId(), sender: 'user', content: msg, timestamp: Date.now() })
-    setProcessingChatId(activeId)
+    const localMessageId = nextId()
+    addMessage({ id: localMessageId, sender: 'user', content: msg, timestamp: Date.now(), timelineOrder: nextTimelineOrder() })
+    if (activeQuestion?.allow_free_text) {
+      try {
+        await handleAnswer(activeQuestion, { selected: [], text: msg })
+      } catch (_err) {
+        removeMessageFromConversation(activeId, localMessageId)
+        setInput(msg)
+      }
+      return
+    }
+    updateConversation(activeId, { status: 'processing', stream: { content: '', reasoning: '', toolCalls: [] } })
     processingChatIdRef.current = activeId
     try {
-      const resp = await agentsApi.chat(name, msg, userId)
+      const resp = await agentsApi.chat(name, msg, activeId, userId)
       // Map backend messageID → conversation so SSE events route correctly
       if (resp && resp.message_id) {
         pendingRequestsRef.current.set(resp.message_id, activeId)
       }
     } catch (err) {
-      addToast(`Failed to send message: ${err.message}`, 'error')
+      removeMessageFromConversation(activeId, localMessageId)
+      setInput(msg)
       processingChatIdRef.current = null
-      setProcessingChatId(null)
+      if (err.status === 409 && err.body?.pending_question_id) {
+        await reconcilePending(activeId)
+        requestAnimationFrame(() => messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' }))
+      } else {
+        addToast(`Failed to send message: ${err.message}`, 'error')
+        updateConversation(activeId, { status: 'completed' })
+      }
     }
-  }, [input, processing, name, activeId, addToast, userId, addMessage, nextId])
+  }, [input, processing, activeQuestion, handleAnswer, name, activeId, addToast, userId, addMessage, nextId, nextTimelineOrder, removeMessageFromConversation, reconcilePending, updateConversation])
 
   const handleKeyDown = (e) => {
     if (
@@ -520,7 +729,7 @@ export default function AgentChat() {
                       className="chat-list-item-name"
                       onDoubleClick={() => startRename(conv.id, conv.name)}
                     >
-                      {processingChatId === conv.id && <i className="fas fa-circle-notch fa-spin" style={{ marginRight: '6px', fontSize: '0.7rem', opacity: 0.7 }} />}
+                      {(conv.status === 'processing' || conv.status === 'waiting_agents') && <i className="fas fa-circle-notch fa-spin chat-conversation-spinner" />}
                       {conv.name}
                     </span>
                     <span className="chat-list-item-time">{relativeTime(conv.updatedAt)}</span>
@@ -616,7 +825,7 @@ export default function AgentChat() {
 
       {/* Messages */}
       <div className="chat-messages" ref={messagesRef}>
-        {messages.length === 0 && !processing && (
+        {messages.length === 0 && (activeConversation?.interactions || []).length === 0 && !processing && (
           <div className="chat-empty-state">
             <div className="chat-empty-icon">
               <i className="fas fa-robot" />
@@ -638,13 +847,32 @@ export default function AgentChat() {
               systemBuf = []
             }
           }
-          messages.forEach((msg, idx) => {
+          const transcript = [
+            ...messages.map((message, index) => ({ kind: 'message', value: message, index })),
+            ...(activeConversation?.interactions || []).map((interaction, index) => ({
+              kind: 'interaction', value: interaction, index: messages.length + index,
+            })),
+          ].sort((a, b) => {
+            const timeDelta = (a.value.timelineOrder ?? normalizeTimestampMs(a.value.timestamp))
+              - (b.value.timelineOrder ?? normalizeTimestampMs(b.value.timestamp))
+            return timeDelta || a.index - b.index
+          })
+          transcript.forEach((entry, transcriptIndex) => {
+            if (entry.kind === 'interaction') {
+              flushSystem(`interaction-${entry.value.id}`)
+              elements.push(entry.value.type === 'question'
+                ? <AgentQuestionCard key={`question-${entry.value.id}`} interaction={entry.value} onAnswer={handleAnswer} />
+                : <AgentPlanCard key={`plan-${entry.value.id}`} interaction={entry.value} onDecide={handlePlanDecision} />)
+              return
+            }
+            const msg = entry.value
+            const idx = entry.index
             const role = senderToRole(msg.sender)
             if (role === 'system') {
               systemBuf.push(msg)
               return
             }
-            flushSystem(idx)
+            flushSystem(transcriptIndex)
             elements.push(
               <div key={msg.id} className={`chat-message chat-message-${role}`}>
                 <div className="chat-message-avatar">
@@ -685,7 +913,14 @@ export default function AgentChat() {
           flushSystem('end')
           return elements
         })()}
-        {processing && (streamReasoning || streamContent || streamToolCalls.length > 0) && (
+        {(activeConversation?.subAgents || []).length > 0 && (
+          <div className="sub-agent-strip" aria-label="Sub-agent activity">
+            {(activeConversation.subAgents || []).map(activity => (
+              <SubAgentActivity key={activity.agent_id} activity={activity} />
+            ))}
+          </div>
+        )}
+        {(streamReasoning || streamContent || streamToolCalls.length > 0) && (
           <div className="chat-message chat-message-assistant">
             <div className="chat-message-avatar">
               <i className="fas fa-robot" />
@@ -740,7 +975,7 @@ export default function AgentChat() {
             </div>
           </div>
         )}
-        {processing && !streamReasoning && !streamContent && streamToolCalls.length === 0 && (
+        {(processing || waitingAgents) && !streamReasoning && !streamContent && streamToolCalls.length === 0 && (
           <div className="chat-message chat-message-assistant">
             <div className="chat-message-avatar chip-neutral">
               <i className="fas fa-cogs" />

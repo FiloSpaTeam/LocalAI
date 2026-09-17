@@ -124,6 +124,8 @@ func defaultFields() []ConfigField {
 		// AdvancedSettings
 		{Name: "standalone_job", Label: "Standalone Job", Type: FieldCheckbox, DefaultValue: false, HelpText: "Run as background job without user interaction", Tags: ConfigFieldTags{Section: "AdvancedSettings"}},
 		{Name: "initiate_conversations", Label: "Initiate Conversations", Type: FieldCheckbox, DefaultValue: false, Tags: ConfigFieldTags{Section: "AdvancedSettings"}},
+		{Name: "enable_user_questions", Label: "Enable User Questions", Type: FieldCheckbox, DefaultValue: false, HelpText: "Allow the agent to ask structured questions and wait for answers through the chat API", Tags: ConfigFieldTags{Section: "AdvancedSettings"}},
+		{Name: "require_plan_approval", Label: "Require Plan Approval", Type: FieldCheckbox, DefaultValue: false, HelpText: "Wait for approval before executing an automatic plan", Tags: ConfigFieldTags{Section: "AdvancedSettings", DependsOn: "enable_planning"}},
 		{Name: "enable_planning", Label: "Enable Planning", Type: FieldCheckbox, DefaultValue: false, Tags: ConfigFieldTags{Section: "AdvancedSettings"}},
 		{Name: "cancel_previous_on_new_message", Label: "Cancel Previous on New Message", Type: FieldCheckbox, DefaultValue: true, HelpText: "Cancel running job when a new message arrives", Tags: ConfigFieldTags{Section: "AdvancedSettings"}},
 		{Name: "loop_detection", Label: "Loop Detection", Type: FieldNumber, DefaultValue: 5, Min: 1, Step: 1, Tags: ConfigFieldTags{Section: "AdvancedSettings"}},
@@ -135,6 +137,9 @@ func defaultFields() []ConfigField {
 		{Name: "enable_reasoning_for_instruct", Label: "Enable Reasoning for Instruct Models", Type: FieldCheckbox, DefaultValue: false, HelpText: "Force structured reasoning before tool selection (recommended for instruct-tuned models)", Tags: ConfigFieldTags{Section: "AdvancedSettings"}},
 		{Name: "enable_guided_tools", Label: "Enable Guided Tools", Type: FieldCheckbox, DefaultValue: false, HelpText: "Filter tools through guidance using descriptions", Tags: ConfigFieldTags{Section: "AdvancedSettings"}},
 		{Name: "enable_skills", Label: "Enable Skills", Type: FieldCheckbox, DefaultValue: false, HelpText: "Inject skills into the agent", Tags: ConfigFieldTags{Section: "AdvancedSettings"}},
+		{Name: "enable_sub_agents", Label: "Enable Sub-Agents", Type: FieldCheckbox, DefaultValue: false, HelpText: "Allow this agent to delegate work to configured local or remote agents", Tags: ConfigFieldTags{Section: "AdvancedSettings"}},
+		{Name: "sub_agents", Label: "Local Sub-Agents", Type: FieldTextarea, DefaultValue: []string{}, HelpText: "Structured local delegation allow-list; edited by the sub-agent configuration editor", Tags: ConfigFieldTags{Section: "AdvancedSettings", DependsOn: "enable_sub_agents"}},
+		{Name: "remote_agents", Label: "Remote Agents", Type: FieldTextarea, DefaultValue: []RemoteAgent{}, HelpText: "Structured remote agent configuration; edited by the sub-agent configuration editor", Tags: ConfigFieldTags{Section: "AdvancedSettings", DependsOn: "enable_sub_agents"}},
 		{Name: "skills_mode", Label: "Skills Injection Mode", Type: FieldSelect, DefaultValue: "prompt",
 			Options: []ConfigFieldOption{
 				{Value: "prompt", Label: "Inject as System Prompt"},

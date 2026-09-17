@@ -2,6 +2,7 @@ package localai
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"maps"
@@ -13,6 +14,7 @@ import (
 	"strings"
 
 	"github.com/labstack/echo/v4"
+	"github.com/mudler/LocalAGI/core/interactions"
 	"github.com/mudler/LocalAGI/core/state"
 	coreTypes "github.com/mudler/LocalAGI/core/types"
 	agiServices "github.com/mudler/LocalAGI/services"
@@ -21,6 +23,7 @@ import (
 	"github.com/mudler/LocalAI/core/services/agentpool"
 	"github.com/mudler/LocalAI/core/services/agents"
 	"github.com/mudler/LocalAI/pkg/utils"
+	"github.com/mudler/cogito"
 	"github.com/mudler/xlog"
 )
 
@@ -286,14 +289,81 @@ func ClearAgentObservablesEndpoint(app *application.Application) echo.HandlerFun
 	}
 }
 
+type agentInteractionService interface {
+	ChatInConversationForUser(userID, name, message, conversationID string) (agentpool.ChatReceipt, error)
+	AnswerForUser(userID, name, questionID string, answer cogito.UserAnswer) error
+	DecidePlanForUser(userID, name, planID string, approved bool, subtasks *[]string, feedback string) error
+	PendingForUser(userID, name, conversationID string) (interactions.Snapshot, error)
+}
+
+// AgentChatRequest is a message sent to an agent conversation.
+type AgentChatRequest struct {
+	Message        string `json:"message"`
+	ConversationID string `json:"conversation_id,omitempty"`
+}
+
+// AgentAnswerRequest resolves a pending agent question.
+type AgentAnswerRequest struct {
+	QuestionID string   `json:"question_id"`
+	Selected   []string `json:"selected,omitempty"`
+	Text       string   `json:"text,omitempty"`
+}
+
+// AgentPlanDecisionRequest resolves a pending agent plan approval.
+type AgentPlanDecisionRequest struct {
+	PlanID   string    `json:"plan_id"`
+	Approved *bool     `json:"approved"`
+	Subtasks *[]string `json:"subtasks,omitempty"`
+	Feedback string    `json:"feedback,omitempty"`
+}
+
+// AgentInteractionStatus is returned after an interaction is resolved.
+type AgentInteractionStatus struct {
+	Status string `json:"status"`
+}
+
+func interactionError(c echo.Context, err error) error {
+	status := http.StatusInternalServerError
+	switch {
+	case errors.Is(err, agentpool.ErrInteractiveUnsupported):
+		status = http.StatusNotImplemented
+	case errors.Is(err, agentpool.ErrAgentNotFound),
+		errors.Is(err, cogito.ErrQuestionNotFound),
+		errors.Is(err, interactions.ErrPlanNotFound):
+		status = http.StatusNotFound
+	case errors.Is(err, cogito.ErrInvalidAnswer),
+		errors.Is(err, interactions.ErrInvalidPlanDecision):
+		status = http.StatusBadRequest
+	}
+	return c.JSON(status, map[string]string{"error": err.Error()})
+}
+
+// ChatWithAgentEndpoint sends a message to an agent conversation.
+// @Summary Chat with an agent
+// @Tags agents
+// @Accept json
+// @Produce json
+// @Param name path string true "Agent name"
+// @Param user_id query string false "Target user ID (admin or agent worker only)"
+// @Param request body AgentChatRequest true "Message"
+// @Success 202 {object} agentpool.ChatReceipt
+// @Failure 400 {object} map[string]string
+// @Failure 404 {object} map[string]string
+// @Failure 409 {object} map[string]string
+// @Failure 500 {object} map[string]string
+// @Failure 501 {object} map[string]string
+// @Router /api/agents/{name}/chat [post]
 func ChatWithAgentEndpoint(app *application.Application) echo.HandlerFunc {
 	return func(c echo.Context) error {
-		svc := app.AgentPoolService()
+		return chatWithAgentHandler(app.AgentPoolService())(c)
+	}
+}
+
+func chatWithAgentHandler(svc agentInteractionService) echo.HandlerFunc {
+	return func(c echo.Context) error {
 		userID := effectiveUserID(c)
 		name := decodedParam(c, "name")
-		var payload struct {
-			Message string `json:"message"`
-		}
+		var payload AgentChatRequest
 		if err := c.Bind(&payload); err != nil {
 			return c.JSON(http.StatusBadRequest, map[string]string{"error": "Invalid request format"})
 		}
@@ -301,17 +371,124 @@ func ChatWithAgentEndpoint(app *application.Application) echo.HandlerFunc {
 		if message == "" {
 			return c.JSON(http.StatusBadRequest, map[string]string{"error": "Message cannot be empty"})
 		}
-		messageID, err := svc.ChatForUser(userID, name, message)
+		receipt, err := svc.ChatInConversationForUser(userID, name, message, payload.ConversationID)
 		if err != nil {
-			if strings.Contains(err.Error(), "not found") {
-				return c.JSON(http.StatusNotFound, map[string]string{"error": err.Error()})
+			var pending *agentpool.PendingQuestionError
+			if errors.As(err, &pending) && errors.Is(err, interactions.ErrFreeTextNotAllowed) {
+				return c.JSON(http.StatusConflict, map[string]string{"pending_question_id": pending.QuestionID})
 			}
-			return c.JSON(http.StatusInternalServerError, map[string]string{"error": err.Error()})
+			return interactionError(c, err)
 		}
-		return c.JSON(http.StatusAccepted, map[string]any{
-			"status":     "message_received",
-			"message_id": messageID,
+		return c.JSON(http.StatusAccepted, receipt)
+	}
+}
+
+// AnswerAgentQuestionEndpoint answers a pending question from an agent.
+// @Summary Answer an agent question
+// @Tags agents
+// @Accept json
+// @Produce json
+// @Param name path string true "Agent name"
+// @Param user_id query string false "Target user ID (admin or agent worker only)"
+// @Param request body AgentAnswerRequest true "Answer"
+// @Success 200 {object} AgentInteractionStatus
+// @Failure 400 {object} map[string]string
+// @Failure 404 {object} map[string]string
+// @Failure 500 {object} map[string]string
+// @Failure 501 {object} map[string]string
+// @Router /api/agents/{name}/answer [post]
+func AnswerAgentQuestionEndpoint(app *application.Application) echo.HandlerFunc {
+	return func(c echo.Context) error {
+		return answerAgentQuestionHandler(app.AgentPoolService())(c)
+	}
+}
+
+func answerAgentQuestionHandler(svc agentInteractionService) echo.HandlerFunc {
+	return func(c echo.Context) error {
+		var payload AgentAnswerRequest
+		if err := c.Bind(&payload); err != nil {
+			return c.JSON(http.StatusBadRequest, map[string]string{"error": "Invalid request format"})
+		}
+		payload.QuestionID = strings.TrimSpace(payload.QuestionID)
+		if payload.QuestionID == "" {
+			return c.JSON(http.StatusBadRequest, map[string]string{"error": "question_id is required"})
+		}
+		err := svc.AnswerForUser(effectiveUserID(c), decodedParam(c, "name"), payload.QuestionID, cogito.UserAnswer{
+			Selected: payload.Selected,
+			Text:     payload.Text,
 		})
+		if err != nil {
+			return interactionError(c, err)
+		}
+		return c.JSON(http.StatusOK, AgentInteractionStatus{Status: "answer_received"})
+	}
+}
+
+// DecideAgentPlanEndpoint approves, edits, or rejects a pending agent plan.
+// @Summary Decide an agent plan
+// @Tags agents
+// @Accept json
+// @Produce json
+// @Param name path string true "Agent name"
+// @Param user_id query string false "Target user ID (admin or agent worker only)"
+// @Param request body AgentPlanDecisionRequest true "Plan decision"
+// @Success 200 {object} AgentInteractionStatus
+// @Failure 400 {object} map[string]string
+// @Failure 404 {object} map[string]string
+// @Failure 500 {object} map[string]string
+// @Failure 501 {object} map[string]string
+// @Router /api/agents/{name}/plan [post]
+func DecideAgentPlanEndpoint(app *application.Application) echo.HandlerFunc {
+	return func(c echo.Context) error {
+		return decideAgentPlanHandler(app.AgentPoolService())(c)
+	}
+}
+
+func decideAgentPlanHandler(svc agentInteractionService) echo.HandlerFunc {
+	return func(c echo.Context) error {
+		var payload AgentPlanDecisionRequest
+		if err := c.Bind(&payload); err != nil {
+			return c.JSON(http.StatusBadRequest, map[string]string{"error": "Invalid request format"})
+		}
+		payload.PlanID = strings.TrimSpace(payload.PlanID)
+		if payload.PlanID == "" {
+			return c.JSON(http.StatusBadRequest, map[string]string{"error": "plan_id is required"})
+		}
+		if payload.Approved == nil {
+			return c.JSON(http.StatusBadRequest, map[string]string{"error": "approved is required"})
+		}
+		if err := svc.DecidePlanForUser(effectiveUserID(c), decodedParam(c, "name"), payload.PlanID, *payload.Approved, payload.Subtasks, payload.Feedback); err != nil {
+			return interactionError(c, err)
+		}
+		return c.JSON(http.StatusOK, AgentInteractionStatus{Status: "plan_decision_received"})
+	}
+}
+
+// PendingAgentInteractionsEndpoint returns pending interactions for a conversation.
+// @Summary Get pending agent interactions
+// @Tags agents
+// @Produce json
+// @Param name path string true "Agent name"
+// @Param user_id query string false "Target user ID (admin or agent worker only)"
+// @Param conversation_id query string false "Conversation ID"
+// @Success 200 {object} map[string]any
+// @Failure 404 {object} map[string]string
+// @Failure 500 {object} map[string]string
+// @Failure 501 {object} map[string]string
+// @Router /api/agents/{name}/pending [get]
+func PendingAgentInteractionsEndpoint(app *application.Application) echo.HandlerFunc {
+	return func(c echo.Context) error {
+		return pendingAgentInteractionsHandler(app.AgentPoolService())(c)
+	}
+}
+
+func pendingAgentInteractionsHandler(svc agentInteractionService) echo.HandlerFunc {
+	return func(c echo.Context) error {
+		snapshot, err := svc.PendingForUser(effectiveUserID(c), decodedParam(c, "name"), c.QueryParam("conversation_id"))
+		if err != nil {
+			return interactionError(c, err)
+		}
+		return c.JSON(http.StatusOK, snapshot)
 	}
 }
 

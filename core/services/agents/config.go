@@ -61,6 +61,8 @@ type AgentConfig struct {
 	StandaloneJob          bool   `json:"standalone_job"`
 	InitiateConversations  bool   `json:"initiate_conversations"`
 	CanPlan                bool   `json:"enable_planning"`
+	EnableUserQuestions    bool   `json:"enable_user_questions"`
+	RequirePlanApproval    bool   `json:"require_plan_approval"`
 	PlanReviewerModel      string `json:"plan_reviewer_model"`
 	DisableSinkState       bool   `json:"disable_sink_state"` // legacy, kept for JSON compat — sink state is always disabled
 	PermanentGoal          string `json:"permanent_goal"`
@@ -90,6 +92,11 @@ type AgentConfig struct {
 	EnableSkills   bool     `json:"enable_skills"`
 	SkillsMode     string   `json:"skills_mode,omitempty"`     // "prompt" (default), "tools", or "both"
 	SelectedSkills []string `json:"selected_skills,omitempty"` // Per-agent skill selection
+
+	// Delegation
+	EnableSubAgents bool          `json:"enable_sub_agents"`
+	SubAgents       []string      `json:"sub_agents,omitempty"`
+	RemoteAgents    []RemoteAgent `json:"remote_agents,omitempty"`
 
 	// Memory
 	LongTermMemory          bool   `json:"long_term_memory"`
@@ -131,6 +138,14 @@ type DynamicPromptsConfig struct {
 type FiltersConfig struct {
 	Type   string `json:"type"`
 	Config string `json:"config"`
+}
+
+// RemoteAgent describes an OpenAI Responses-compatible agent endpoint.
+type RemoteAgent struct {
+	Name        string `json:"name"`
+	Description string `json:"description"`
+	URL         string `json:"url"`
+	APIKey      string `json:"api_key,omitempty"`
 }
 
 // MCPServer defines an HTTP-based MCP server endpoint.

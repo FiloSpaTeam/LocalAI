@@ -191,6 +191,33 @@ Each agent has its own configuration that controls its behavior. Key settings in
 
 The pool-level defaults (API URL, API key, models) can be set via environment variables. Individual agents can further override these in their configuration, allowing them to use different LLM providers (OpenAI, other LocalAI instances, etc.) on a per-agent basis.
 
+### Interactive agent chat
+
+The standalone Agents chat can keep a conversation running while it waits for a user or for delegated work. These capabilities are opt-in per agent:
+
+| Setting | Default | Behavior |
+|---------|---------|----------|
+| `enable_user_questions` | `false` | Let the agent ask a structured question and wait for an answer. |
+| `require_plan_approval` | `false` | Pause before executing a generated plan. `enable_planning` must also be `true`. |
+| `enable_sub_agents` | `false` | Let the agent delegate work to configured local or remote agents. |
+| `sub_agents` | `[]` | Allow-list of local agent names; an empty list allows every other local agent. |
+| `remote_agents` | `[]` | Remote OpenAI Responses-compatible agents, each with `name`, `description`, `url`, and optional `api_key`. |
+| `last_message_duration` | `5m` | How long server-side history for an inactive conversation remains available. |
+
+Send the same non-empty `conversation_id` with each chat request to reuse that conversation's server-side history and route questions, plans, and delegated work correctly. History expires after `last_message_duration`; the next request with that ID starts with only the new message. Conversation history and pending questions or plans are held in memory and are lost when LocalAI restarts.
+
+The web UI separately saves its displayed transcript in the browser's local storage. That transcript can still appear after a server restart or history expiry, but it does not restore server-side context or a pending interaction.
+
+`remote_agents[].api_key` is sent as a bearer token to the configured remote URL. It is secret configuration: protect saved agent configs and exported agent JSON, and do not put the key in a remote agent's name, URL, or description. Interaction and delegation SSE events do not include the key.
+
+{{% notice warning %}}
+Interactive questions, plan approval, and sub-agent delegation currently run only in the embedded, in-process agent pool. The native distributed agent executor does not provide parity yet. Remote delegation does not make the native distributed executor interactive.
+{{% /notice %}}
+
+Local sub-agents are restricted to the parent agent's owner. Use their ordinary names in `sub_agents`; an empty list allows every other agent belonging to that owner. Agents without an owner can delegate only to other agents without an owner. Child questions and plans appear in the parent conversation and can be answered through the parent's interaction endpoints.
+
+Remote delegation uses LocalAI's HTTP client policy: redirects are refused, connection setup is bounded, and the job context controls the duration of the response. Configure the final remote URL directly. The remote `/v1/responses` protocol returns the completed result; it does not relay remote questions or plan approvals to the parent chat.
+
 ## Skills
 
 Skills are reusable instruction sets (a name, a description, and the skill's content, optionally with attached resource files) that an agent can draw on while it works. They can be authored directly or imported from git-based skill repositories, so a set of skills can be shared across agents and machines.
@@ -260,6 +287,9 @@ All agent endpoints are grouped under `/api/agents/`:
 | `PUT` | `/api/agents/:name/resume` | Resume a paused agent |
 | `GET` | `/api/agents/:name/status` | Get agent status and observables |
 | `POST` | `/api/agents/:name/chat` | Send a message to an agent |
+| `POST` | `/api/agents/:name/answer` | Answer a pending structured question |
+| `POST` | `/api/agents/:name/plan` | Approve, edit, or reject a pending plan |
+| `GET` | `/api/agents/:name/pending?conversation_id=...` | Recover pending questions and the pending plan for a conversation |
 | `GET` | `/api/agents/:name/sse` | SSE stream for real-time agent events |
 | `GET` | `/api/agents/:name/export` | Export agent configuration as JSON |
 | `POST` | `/api/agents/import` | Import an agent from JSON |
@@ -361,7 +391,10 @@ Send a message to an agent:
 ```bash
 curl -X POST http://localhost:8080/api/agents/my-agent/chat \
   -H "Content-Type: application/json" \
-  -d '{"message": "What is the weather today?"}'
+  -d '{
+    "message": "Research the options and ask before making a final choice.",
+    "conversation_id": "research-session-1"
+  }'
 ```
 
 Listen to real-time events via SSE:
@@ -370,12 +403,48 @@ Listen to real-time events via SSE:
 curl -N http://localhost:8080/api/agents/my-agent/sse
 ```
 
+Answer a question by sending one or more offered values in `selected`, free-form `text`, or both as allowed by the question:
+
+```bash
+curl -X POST http://localhost:8080/api/agents/my-agent/answer \
+  -H "Content-Type: application/json" \
+  -d '{
+    "question_id": "question-id-from-sse",
+    "selected": ["Validate first"],
+    "text": "Focus on the Linux build."
+  }'
+```
+
+Approve a plan as proposed, approve an edited list of subtasks, or reject it with feedback:
+
+```bash
+curl -X POST http://localhost:8080/api/agents/my-agent/plan \
+  -H "Content-Type: application/json" \
+  -d '{
+    "plan_id": "plan-id-from-sse",
+    "approved": true,
+    "subtasks": ["Inspect the configuration", "Run the focused tests"],
+    "feedback": ""
+  }'
+```
+
+After opening or reconnecting a client, recover unresolved interactions for that exact conversation:
+
+```bash
+curl 'http://localhost:8080/api/agents/my-agent/pending?conversation_id=research-session-1'
+```
+
 The SSE stream emits the following event types:
 
 - `json_message` - agent/user messages
-- `json_message_status` - processing status updates (`processing` / `completed`)
+- `json_message_status` - conversation status updates: `processing`, `waiting_user`, `waiting_agents`, or `completed`
+- `question` - a structured question with its ID, choices, free-text policy, `conversation_id`, and `message_id`
+- `plan` - a proposed plan with its ID, description, subtasks, `conversation_id`, and `message_id`
+- `sub_agent` - delegated work with `spawned`, `completed`, or `failed` status and a result summary when available
 - `status` - system messages (reasoning steps, action results)
 - `json_error` - error notifications
+
+Submitting a valid answer or plan decision changes the conversation status back to `processing`. While the status is `waiting_agents`, the parent conversation remains active and can accept another chat message. Interaction IDs are single-use; a client that is unsure whether it missed an SSE event should query the pending endpoint before retrying.
 
 ## Generated Files and Outputs
 

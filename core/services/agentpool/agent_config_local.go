@@ -8,6 +8,7 @@ import (
 	"github.com/mudler/LocalAGI/core/agent"
 	"github.com/mudler/LocalAGI/core/sse"
 	"github.com/mudler/LocalAGI/core/state"
+	agiConfig "github.com/mudler/LocalAGI/pkg/config"
 	agiServices "github.com/mudler/LocalAGI/services"
 	"github.com/mudler/LocalAI/core/services/agents"
 )
@@ -168,12 +169,44 @@ func (b *localAgentConfigBackend) ListAllGrouped() map[string][]UserAgentInfo {
 func (b *localAgentConfigBackend) GetConfigMeta() AgentConfigMetaResult {
 	meta := b.svc.localAGI.configMeta
 	return AgentConfigMetaResult{
-		Fields:     meta.Fields,
+		Fields:     withDelegationConfigFields(meta.Fields),
 		Actions:    meta.Actions,
 		Connectors: meta.Connectors,
 		Filters:    meta.Filters,
 		OutputsDir: b.svc.outputsDir,
 	}
+}
+
+func withDelegationConfigFields(fields []agiConfig.Field) []agiConfig.Field {
+	present := make(map[string]struct{}, len(fields))
+	for _, field := range fields {
+		present[field.Name] = struct{}{}
+	}
+	customFields := []agiConfig.Field{
+		{
+			Name:         "sub_agents",
+			Label:        "Local Sub-Agents",
+			Type:         agiConfig.FieldTypeTextarea,
+			DefaultValue: []string{},
+			HelpText:     "Structured local delegation allow-list; edited by the sub-agent configuration editor",
+			Tags:         agiConfig.Tags{Section: "AdvancedSettings"},
+		},
+		{
+			Name:         "remote_agents",
+			Label:        "Remote Agents",
+			Type:         agiConfig.FieldTypeTextarea,
+			DefaultValue: []state.RemoteAgent{},
+			HelpText:     "Structured remote agent configuration; edited by the sub-agent configuration editor",
+			Tags:         agiConfig.Tags{Section: "AdvancedSettings"},
+		},
+	}
+	result := append([]agiConfig.Field(nil), fields...)
+	for _, field := range customFields {
+		if _, found := present[field.Name]; !found {
+			result = append(result, field)
+		}
+	}
+	return result
 }
 
 func (b *localAgentConfigBackend) ListAvailableActions() []string {

@@ -1,5 +1,14 @@
 basePath: /
 definitions:
+  agentpool.ChatReceipt:
+    properties:
+      message_id:
+        type: string
+      question_id:
+        type: string
+      status:
+        type: string
+    type: object
   config.Gallery:
     properties:
       mirrors:
@@ -309,6 +318,42 @@ definitions:
         additionalProperties: {}
         type: object
       tags:
+        items:
+          type: string
+        type: array
+    type: object
+  localai.AgentAnswerRequest:
+    properties:
+      question_id:
+        type: string
+      selected:
+        items:
+          type: string
+        type: array
+      text:
+        type: string
+    type: object
+  localai.AgentChatRequest:
+    properties:
+      conversation_id:
+        type: string
+      message:
+        type: string
+    type: object
+  localai.AgentInteractionStatus:
+    properties:
+      status:
+        type: string
+    type: object
+  localai.AgentPlanDecisionRequest:
+    properties:
+      approved:
+        type: boolean
+      feedback:
+        type: string
+      plan_id:
+        type: string
+      subtasks:
         items:
           type: string
         type: array
@@ -1599,6 +1644,13 @@ definitions:
         items:
           type: string
         type: array
+      context_size:
+        description: |-
+          ContextSize is the effective context window in tokens the backend will
+          run with: the configured context_size, or the default when unset. 0 means
+          the value is unknown (e.g. a loose file with no config). Clients can use
+          this to size their context budget for auto-compaction and pruning.
+        type: integer
       id:
         type: string
       input_modalities:
@@ -1816,7 +1868,6 @@ definitions:
         description: Always include in response
         type: boolean
       type:
-        description: always "function"
         type: string
     type: object
   schema.ORIncompleteDetails:
@@ -3419,6 +3470,219 @@ paths:
       summary: Execute an agent task by name
       tags:
       - agent-jobs
+  /api/agents/{name}/answer:
+    post:
+      consumes:
+      - application/json
+      parameters:
+      - description: Agent name
+        in: path
+        name: name
+        required: true
+        type: string
+      - description: Target user ID (admin or agent worker only)
+        in: query
+        name: user_id
+        type: string
+      - description: Answer
+        in: body
+        name: request
+        required: true
+        schema:
+          $ref: '#/definitions/localai.AgentAnswerRequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/localai.AgentInteractionStatus'
+        "400":
+          description: Bad Request
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+        "404":
+          description: Not Found
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+        "500":
+          description: Internal Server Error
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+        "501":
+          description: Not Implemented
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+      summary: Answer an agent question
+      tags:
+      - agents
+  /api/agents/{name}/chat:
+    post:
+      consumes:
+      - application/json
+      parameters:
+      - description: Agent name
+        in: path
+        name: name
+        required: true
+        type: string
+      - description: Target user ID (admin or agent worker only)
+        in: query
+        name: user_id
+        type: string
+      - description: Message
+        in: body
+        name: request
+        required: true
+        schema:
+          $ref: '#/definitions/localai.AgentChatRequest'
+      produces:
+      - application/json
+      responses:
+        "202":
+          description: Accepted
+          schema:
+            $ref: '#/definitions/agentpool.ChatReceipt'
+        "400":
+          description: Bad Request
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+        "404":
+          description: Not Found
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+        "409":
+          description: Conflict
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+        "500":
+          description: Internal Server Error
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+        "501":
+          description: Not Implemented
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+      summary: Chat with an agent
+      tags:
+      - agents
+  /api/agents/{name}/pending:
+    get:
+      parameters:
+      - description: Agent name
+        in: path
+        name: name
+        required: true
+        type: string
+      - description: Target user ID (admin or agent worker only)
+        in: query
+        name: user_id
+        type: string
+      - description: Conversation ID
+        in: query
+        name: conversation_id
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            additionalProperties: true
+            type: object
+        "404":
+          description: Not Found
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+        "500":
+          description: Internal Server Error
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+        "501":
+          description: Not Implemented
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+      summary: Get pending agent interactions
+      tags:
+      - agents
+  /api/agents/{name}/plan:
+    post:
+      consumes:
+      - application/json
+      parameters:
+      - description: Agent name
+        in: path
+        name: name
+        required: true
+        type: string
+      - description: Target user ID (admin or agent worker only)
+        in: query
+        name: user_id
+        type: string
+      - description: Plan decision
+        in: body
+        name: request
+        required: true
+        schema:
+          $ref: '#/definitions/localai.AgentPlanDecisionRequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/localai.AgentInteractionStatus'
+        "400":
+          description: Bad Request
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+        "404":
+          description: Not Found
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+        "500":
+          description: Internal Server Error
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+        "501":
+          description: Not Implemented
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+      summary: Decide an agent plan
+      tags:
+      - agents
   /api/aliases:
     get:
       responses:

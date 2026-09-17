@@ -135,6 +135,22 @@ var _ = Describe("API Instructions Endpoints", func() {
 			Expect(string(body)).NotTo(ContainSubstring("/v1/3d/generations"))
 		})
 
+		It("should advertise interactive agent endpoints", func() {
+			req := httptest.NewRequest(http.MethodGet, "/api/instructions/agents?format=json", nil)
+			rec := httptest.NewRecorder()
+			app.ServeHTTP(rec, req)
+
+			Expect(rec.Code).To(Equal(http.StatusOK))
+			var resp map[string]any
+			Expect(json.Unmarshal(rec.Body.Bytes(), &resp)).To(Succeed())
+			fragment := resp["swagger_fragment"].(map[string]any)
+			paths := fragment["paths"].(map[string]any)
+			Expect(paths).To(HaveKey("/api/agents/{name}/chat"))
+			Expect(paths).To(HaveKey("/api/agents/{name}/answer"))
+			Expect(paths).To(HaveKey("/api/agents/{name}/plan"))
+			Expect(paths).To(HaveKey("/api/agents/{name}/pending"))
+		})
+
 		It("should return JSON fragment when format=json", func() {
 			req := httptest.NewRequest(http.MethodGet, "/api/instructions/chat-inference?format=json", nil)
 			rec := httptest.NewRecorder()

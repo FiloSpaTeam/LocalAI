@@ -549,3 +549,7 @@ require (
 	howett.net/plist v1.0.2-0.20250314012144-ee69052608d9 // indirect
 	lukechampine.com/blake3 v1.4.1 // indirect
 )
+
+replace github.com/mudler/LocalAGI => github.com/FiloSpaTeam/LocalAGI v0.0.0-20260917194731-a88ddd8242f8
+
+replace github.com/mudler/cogito => github.com/FiloSpaTeam/cogito v0.0.0-20260917131519-8f2ce74a8d14
