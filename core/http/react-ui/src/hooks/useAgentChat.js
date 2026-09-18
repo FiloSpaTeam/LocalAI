@@ -14,14 +14,7 @@ function loadConversations(agentName) {
     if (stored) {
       const data = JSON.parse(stored)
       if (data && Array.isArray(data.conversations)) {
-        return {
-          ...data,
-          conversations: data.conversations.map(conversation => (
-            conversation.status === 'processing'
-              ? { ...conversation, status: 'completed', stream: { content: '', reasoning: '', toolCalls: [] } }
-              : conversation
-          )),
-        }
+        return data
       }
     }
   } catch (_e) {
@@ -39,10 +32,6 @@ function saveConversations(agentName, conversations, activeId) {
         messages: c.messages,
         createdAt: c.createdAt,
         updatedAt: c.updatedAt,
-        interactions: c.interactions || [],
-        status: c.status || 'completed',
-        stream: c.stream || { content: '', reasoning: '', toolCalls: [] },
-        subAgents: c.subAgents || [],
       })),
       activeId,
       lastSaved: Date.now(),
@@ -62,10 +51,6 @@ function createConversation() {
     messages: [],
     createdAt: Date.now(),
     updatedAt: Date.now(),
-    interactions: [],
-    status: 'completed',
-    stream: { content: '', reasoning: '', toolCalls: [] },
-    subAgents: [],
   }
 }
 
@@ -133,7 +118,6 @@ export function useAgentChat(agentName) {
   const addMessage = useCallback((msg) => {
     setConversations(prev => prev.map(c => {
       if (c.id !== activeId) return c
-      if (c.messages.some(existing => existing.id === msg.id)) return c
       const updated = {
         ...c,
         messages: [...c.messages, msg],
@@ -153,7 +137,6 @@ export function useAgentChat(agentName) {
   const addMessageToConversation = useCallback((conversationId, msg) => {
     setConversations(prev => prev.map(c => {
       if (c.id !== conversationId) return c
-      if (c.messages.some(existing => existing.id === msg.id)) return c
       const updated = {
         ...c,
         messages: [...c.messages, msg],
@@ -167,69 +150,10 @@ export function useAgentChat(agentName) {
     }))
   }, [])
 
-  const removeMessageFromConversation = useCallback((conversationId, messageId) => {
-    setConversations(prev => prev.map(c => (
-      c.id === conversationId
-        ? { ...c, messages: c.messages.filter(message => message.id !== messageId), updatedAt: Date.now() }
-        : c
-    )))
-  }, [])
-
-  const updateConversation = useCallback((conversationId, updater) => {
-    setConversations(prev => prev.map(c => {
-      if (c.id !== conversationId) return c
-      const changes = typeof updater === 'function' ? updater(c) : updater
-      return { ...c, ...changes, updatedAt: Date.now() }
-    }))
-  }, [])
-
-  const upsertInteraction = useCallback((conversationId, interaction) => {
-    updateConversation(conversationId, conversation => {
-      const current = conversation.interactions || []
-      const index = current.findIndex(item => item.id === interaction.id && item.type === interaction.type)
-      if (index < 0) return { interactions: [...current, interaction] }
-      const interactions = [...current]
-      interactions[index] = interactions[index].resolved
-        ? { ...interaction, ...interactions[index] }
-        : {
-          ...interactions[index],
-          ...interaction,
-          timelineOrder: interactions[index].timelineOrder ?? interaction.timelineOrder,
-        }
-      return { interactions }
-    })
-  }, [updateConversation])
-
-  const resolveInteraction = useCallback((conversationId, type, id, resolution) => {
-    updateConversation(conversationId, conversation => ({
-      interactions: (conversation.interactions || []).map(item => (
-        item.id === id && item.type === type
-          ? { ...item, ...(resolution.subtasks ? { subtasks: resolution.subtasks } : {}), resolved: true, resolution, error: '' }
-          : item
-      )),
-    }))
-  }, [updateConversation])
-
-  const setInteractionError = useCallback((conversationId, type, id, error) => {
-    updateConversation(conversationId, conversation => ({
-      interactions: (conversation.interactions || []).map(item => (
-        item.id === id && item.type === type ? { ...item, error } : item
-      )),
-    }))
-  }, [updateConversation])
-
   const clearMessages = useCallback(() => {
     setConversations(prev => {
       const updated = prev.map(c =>
-        c.id === activeId ? {
-          ...c,
-          messages: [],
-          interactions: [],
-          subAgents: [],
-          status: 'completed',
-          stream: { content: '', reasoning: '', toolCalls: [] },
-          updatedAt: Date.now(),
-        } : c
+        c.id === activeId ? { ...c, messages: [], updatedAt: Date.now() } : c
       )
       // Save immediately so a page refresh doesn't restore the old messages
       saveConversations(agentName, updated, activeId)
@@ -252,11 +176,6 @@ export function useAgentChat(agentName) {
     renameConversation,
     addMessage,
     addMessageToConversation,
-    removeMessageFromConversation,
-    updateConversation,
-    upsertInteraction,
-    resolveInteraction,
-    setInteractionError,
     clearMessages,
     getMessages,
   }

@@ -1,5 +1,8 @@
 # Interactive agent chat implementation plan
 
+> Scope update (2026-09-18): the user chose OpenCode as the interactive interface. The LocalAI chat UI additions are removed in a follow-up; backend APIs and agent configuration remain. See [the OpenCode handoff](2026-09-18-opencode-plugin-localai-handoff.md). This document records the original implementation and validation.
+
+
 > **For agentic workers:** Use superpowers:subagent-driven-development to implement and review the independent UI task alongside the service integration.
 
 **Goal:** Deliver the approved LocalAI embedded-pool integration for interactive agent chat.

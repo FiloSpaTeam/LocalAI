@@ -191,22 +191,34 @@ Each agent has its own configuration that controls its behavior. Key settings in
 
 The pool-level defaults (API URL, API key, models) can be set via environment variables. Individual agents can further override these in their configuration, allowing them to use different LLM providers (OpenAI, other LocalAI instances, etc.) on a per-agent basis.
 
-### Interactive agent chat
+### Interactive agent API
 
-The standalone Agents chat can keep a conversation running while it waits for a user or for delegated work. These capabilities are opt-in per agent:
+The standalone agent API can keep a conversation running while it waits for a user or delegated work. These capabilities are opt-in per agent and intended for external clients, including the planned independent `opencode-plugin-localai` integration. The built-in agent chat does not render structured questions, plan approvals, or delegated activity. Use an interaction-capable client for agents that require these flows. Agent settings remain available in the configuration editor.
 
 | Setting | Default | Behavior |
 |---------|---------|----------|
 | `enable_user_questions` | `false` | Let the agent ask a structured question and wait for an answer. |
 | `require_plan_approval` | `false` | Pause before executing a generated plan. `enable_planning` must also be `true`. |
 | `enable_sub_agents` | `false` | Let the agent delegate work to configured local or remote agents. |
-| `sub_agents` | `[]` | Allow-list of local agent names; an empty list allows every other local agent. |
+| `sub_agents` | `[]` | Allow-list of local agent names; an empty list allows every other local agent belonging to the same owner. |
 | `remote_agents` | `[]` | Remote OpenAI Responses-compatible agents, each with `name`, `description`, `url`, and optional `api_key`. |
 | `last_message_duration` | `5m` | How long server-side history for an inactive conversation remains available. |
 
 Send the same non-empty `conversation_id` with each chat request to reuse that conversation's server-side history and route questions, plans, and delegated work correctly. History expires after `last_message_duration`; the next request with that ID starts with only the new message. Conversation history and pending questions or plans are held in memory and are lost when LocalAI restarts.
 
-The web UI separately saves its displayed transcript in the browser's local storage. That transcript can still appear after a server restart or history expiry, but it does not restore server-side context or a pending interaction.
+External clients use these endpoints under the same authentication and agent ownership rules as ordinary chat:
+
+| Endpoint | Purpose |
+|----------|---------|
+| `POST /api/agents/:name/chat` | Submit `{message, conversation_id}`; returns a receipt while work runs asynchronously. |
+| `GET /api/agents/:name/sse` | Subscribe to messages, statuses, streaming output, questions, plans, and sub-agent events. |
+| `GET /api/agents/:name/pending?conversation_id=...` | Recover pending questions and the oldest pending plan. |
+| `POST /api/agents/:name/answer` | Submit `{question_id, selected, text}`. |
+| `POST /api/agents/:name/plan` | Submit `{plan_id, approved, subtasks?, feedback?}`. |
+
+Subscribe before submitting work and route events by `conversation_id` and `message_id`. Fetch pending interactions on reconnect and after a plan decision: only the oldest plan is returned, so omission from a non-empty plan snapshot does not establish that another plan has finished. Pending recovery is not an event replay or a durable job-result store; clients must not assume missed completion events will be recovered by this endpoint.
+
+A rejected plan with non-empty feedback requests replanning; a final rejection uses empty feedback. Messages sent while a conversation is parked are injected into its live loop. If a question is pending, a chat message can answer it only when free text is allowed; otherwise the API returns `409` with `pending_question_id`. Interactive endpoints return `501` for the native distributed executor.
 
 `remote_agents[].api_key` is sent as a bearer token to the configured remote URL. It is secret configuration: protect saved agent configs and exported agent JSON, and do not put the key in a remote agent's name, URL, or description. Interaction and delegation SSE events do not include the key.
 

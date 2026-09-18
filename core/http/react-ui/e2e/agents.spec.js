@@ -47,4 +47,18 @@ test.describe('Agents page', () => {
     await expect(status).toHaveAttribute('target', '_blank')
     await expect(page).toHaveURL(/\/app\/agents\/demo\/chat\?user_id=test-user$/)
   })
+
+  test('sends ordinary agent chat with the selected user scope', async ({ page }) => {
+    let request
+    await page.route('**/api/agents/demo/chat**', async route => {
+      request = { url: route.request().url(), body: route.request().postDataJSON() }
+      await route.fulfill({ json: { status: 'message_received', message_id: 'legacy-message' } })
+    })
+    await page.goto('/app/agents/demo/chat?user_id=test-user')
+    await page.getByPlaceholder('Type a message...').fill('Hello agent')
+    await page.getByRole('button', { name: 'Send message' }).click()
+    await expect.poll(() => request).toBeTruthy()
+    expect(new URL(request.url).searchParams.get('user_id')).toBe('test-user')
+    expect(request.body).toEqual({ message: 'Hello agent' })
+  })
 })
