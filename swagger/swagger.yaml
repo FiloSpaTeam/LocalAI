@@ -2,6 +2,8 @@ basePath: /
 definitions:
   agentpool.ChatReceipt:
     properties:
+      job_id:
+        type: string
       message_id:
         type: string
       question_id:
@@ -307,6 +309,38 @@ definitions:
         type: number
       total_bytes:
         type: integer
+    type: object
+  jobs.ChatJob:
+    properties:
+      agent:
+        type: string
+      completed_at:
+        type: string
+      conversation_id:
+        type: string
+      created_at:
+        type: string
+      error:
+        $ref: '#/definitions/jobs.ChatJobError'
+      expires_at:
+        type: string
+      job_id:
+        type: string
+      message_id:
+        type: string
+      result:
+        type: string
+      status:
+        type: string
+      updated_at:
+        type: string
+    type: object
+  jobs.ChatJobError:
+    properties:
+      code:
+        type: string
+      message:
+        type: string
     type: object
   localai.APIInstructionResponse:
     properties:
@@ -3528,6 +3562,8 @@ paths:
     post:
       consumes:
       - application/json
+      description: Embedded root jobs add a durable job_id to the receipt; question
+        answers and live-loop injections do not create jobs. Submission is not idempotent.
       parameters:
       - description: Agent name
         in: path
@@ -3581,7 +3617,71 @@ paths:
             additionalProperties:
               type: string
             type: object
+        "503":
+          description: Service Unavailable
+          schema:
+            additionalProperties:
+              type: string
+            type: object
       summary: Chat with an agent
+      tags:
+      - agents
+  /api/agents/{name}/jobs/{job_id}:
+    get:
+      description: Look up a root chat job, including after its agent is deleted.
+        Unknown and other-owner jobs return the same 404. Expired results return 410
+        while their tombstone is retained.
+      parameters:
+      - description: Public agent name
+        in: path
+        name: name
+        required: true
+        type: string
+      - description: Job ID returned by chat
+        in: path
+        name: job_id
+        required: true
+        type: string
+      - description: Target user ID (admin or agent worker only)
+        in: query
+        name: user_id
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/jobs.ChatJob'
+        "401":
+          description: Unauthorized
+          schema:
+            $ref: '#/definitions/schema.ErrorResponse'
+        "403":
+          description: Forbidden
+          schema:
+            $ref: '#/definitions/schema.ErrorResponse'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/schema.ErrorResponse'
+        "410":
+          description: Gone
+          schema:
+            $ref: '#/definitions/schema.ErrorResponse'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/schema.ErrorResponse'
+        "501":
+          description: Not Implemented
+          schema:
+            $ref: '#/definitions/schema.ErrorResponse'
+        "503":
+          description: Service Unavailable
+          schema:
+            $ref: '#/definitions/schema.ErrorResponse'
+      summary: Get a durable agent chat job
       tags:
       - agents
   /api/agents/{name}/pending:

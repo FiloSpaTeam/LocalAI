@@ -216,7 +216,7 @@ External clients use these endpoints under the same authentication and agent own
 | `POST /api/agents/:name/answer` | Submit `{question_id, selected, text}`. |
 | `POST /api/agents/:name/plan` | Submit `{plan_id, approved, subtasks?, feedback?}`. |
 
-Subscribe before submitting work and route events by `conversation_id` and `message_id`. Fetch pending interactions on reconnect and after a plan decision: only the oldest plan is returned, so omission from a non-empty plan snapshot does not establish that another plan has finished. Pending recovery is not an event replay or a durable job-result store; clients must not assume missed completion events will be recovered by this endpoint.
+Subscribe before submitting work and route events by `conversation_id` and `message_id`. Fetch pending interactions on reconnect and after a plan decision: only the oldest plan is returned, so omission from a non-empty plan snapshot does not establish that another plan has finished. Pending recovery is not event replay. Newly accepted embedded root jobs also return a durable `job_id`; use `GET /api/agents/:name/jobs/:job_id` to recover their terminal report. See [durable job recovery](../agent-job-recovery/) for statuses, retention and failure semantics.
 
 A rejected plan with non-empty feedback requests replanning; a final rejection uses empty feedback. Messages sent while a conversation is parked are injected into its live loop. If a question is pending, a chat message can answer it only when free text is allowed; otherwise the API returns `409` with `pending_question_id`. Interactive endpoints return `501` for the native distributed executor.
 

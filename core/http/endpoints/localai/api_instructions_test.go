@@ -149,6 +149,7 @@ var _ = Describe("API Instructions Endpoints", func() {
 			Expect(paths).To(HaveKey("/api/agents/{name}/answer"))
 			Expect(paths).To(HaveKey("/api/agents/{name}/plan"))
 			Expect(paths).To(HaveKey("/api/agents/{name}/pending"))
+			Expect(paths).To(HaveKey("/api/agents/{name}/jobs/{job_id}"))
 		})
 
 		It("should return JSON fragment when format=json", func() {

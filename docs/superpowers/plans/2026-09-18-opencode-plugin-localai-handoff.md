@@ -37,6 +37,8 @@ Authoritative LocalAI files: `core/http/routes/agents.go`, `core/http/endpoints/
 
 ## Known limits: do not promise more than the API provides
 
+Update: the local durable-job implementation is described in [the recovery handoff](2026-09-18-durable-agent-jobs-plugin-handoff.md). The following paragraph records the original pre-durability baseline; use the new contract when running a build that includes it.
+
 Pending recovery is NOT event replay or a durable result store. If a worker completes while disconnected, pending can be empty even though its result was missed. Conversation trackers and interaction registries are in memory and expire/restart. The initial async receipt is not a durable task handle. Do not blindly retry a task POST after an ambiguous timeout: there is no verified idempotency guarantee. There is no verified per-job cancellation API; agent-wide pause is not equivalent. Verify these gaps in source and report any necessary LocalAI API additions for a follow-up in the LocalAI session.
 
 Using the same worker agent for concurrent tasks may interact with cancellation policies. V1 should serialize work per worker until behavior is verified. LocalAI's model API and agent API are different protocols: pointing an OpenCode model provider at `/api/agents` is not an integration.

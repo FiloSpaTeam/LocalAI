@@ -87,6 +87,7 @@ var _ = Describe("Interactive service user scope", func() {
 		receipt, err := svc.ChatInConversationForUser("alice", "helper", "print commands", "conversation")
 		Expect(err).NotTo(HaveOccurred())
 		Expect(receipt.Status).To(Equal("answer_received"))
+		Expect(receipt.JobID).To(BeEmpty())
 		Expect(receipt.QuestionID).To(Equal("question"))
 		Expect(receipt.MessageID).To(BeEmpty())
 		Eventually(done).Should(Receive(Equal(cogito.UserAnswer{Text: "print commands"})))

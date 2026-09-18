@@ -18,6 +18,7 @@ import (
 	"github.com/mudler/LocalAI/core/http/auth"
 	"github.com/mudler/LocalAI/core/services/agents"
 	"github.com/mudler/LocalAI/core/services/distributed"
+	"github.com/mudler/LocalAI/core/services/jobs"
 	"github.com/mudler/LocalAI/core/services/messaging"
 	skillsManager "github.com/mudler/LocalAI/core/services/skills"
 	"github.com/mudler/LocalAI/pkg/httpclient"
@@ -87,17 +88,20 @@ type userManager struct {
 // AgentPoolService wraps LocalAGI's AgentPool, Skills service, and collections backend
 // to provide agentic capabilities integrated directly into LocalAI.
 type AgentPoolService struct {
-	appConfig          *config.ApplicationConfig
-	collectionsBackend collections.Backend
-	configBackend      AgentConfigBackend // Abstracts local vs distributed agent operations
-	localAGI           localAGICore
-	distributed        distributedBridge
-	users              userManager
-	stateDir           string
-	outputsDir         string
-	apiURL             string // Resolved API URL for agent execution
-	apiKey             string // Resolved API key for agent execution
-	mu                 sync.Mutex
+	chatStore               jobs.ChatStore
+	chatPersistenceFailures sync.Map
+	chatCleanupCancel       context.CancelFunc
+	appConfig               *config.ApplicationConfig
+	collectionsBackend      collections.Backend
+	configBackend           AgentConfigBackend // Abstracts local vs distributed agent operations
+	localAGI                localAGICore
+	distributed             distributedBridge
+	users                   userManager
+	stateDir                string
+	outputsDir              string
+	apiURL                  string // Resolved API URL for agent execution
+	apiKey                  string // Resolved API key for agent execution
+	mu                      sync.Mutex
 }
 
 // AgentEventBridge is the interface for event publishing needed by AgentPoolService.
@@ -268,7 +272,7 @@ func (s *AgentPoolService) startDistributed(ctx context.Context, apiURL, apiKey 
 }
 
 // startLocalAGI initializes the full LocalAGI pool for standalone mode.
-func (s *AgentPoolService) startLocalAGI(_ context.Context, cfg config.AgentPoolConfig, apiURL, apiKey string) error {
+func (s *AgentPoolService) startLocalAGI(ctx context.Context, cfg config.AgentPoolConfig, apiURL, apiKey string) error {
 	// State dir: explicit config > DataPath > DynamicConfigsDir > fallback
 	stateDir := cmp.Or(cfg.StateDir, s.appConfig.DataPath, s.appConfig.DynamicConfigsDir, "agents")
 	if err := os.MkdirAll(stateDir, 0750); err != nil {
@@ -356,6 +360,11 @@ func (s *AgentPoolService) startLocalAGI(_ context.Context, cfg config.AgentPool
 		agiServices.FiltersConfigMeta(),
 	)
 
+	// Initialize durable admission before any agent can accept chat work.
+	if err := s.initChatStore(ctx); err != nil {
+		return err
+	}
+
 	// Start all agents
 	if err := pool.StartAll(); err != nil {
 		xlog.Error("Failed to start agent pool", "error", err)
@@ -369,6 +378,9 @@ func (s *AgentPoolService) startLocalAGI(_ context.Context, cfg config.AgentPool
 }
 
 func (s *AgentPoolService) Stop() {
+	if s.chatCleanupCancel != nil {
+		s.chatCleanupCancel()
+	}
 	if s.configBackend != nil {
 		s.configBackend.Stop()
 	}

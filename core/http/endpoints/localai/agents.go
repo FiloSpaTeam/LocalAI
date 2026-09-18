@@ -325,6 +325,8 @@ type AgentInteractionStatus struct {
 func interactionError(c echo.Context, err error) error {
 	status := http.StatusInternalServerError
 	switch {
+	case errors.Is(err, agentpool.ErrJobPersistence):
+		status = http.StatusServiceUnavailable
 	case errors.Is(err, agentpool.ErrInteractiveUnsupported):
 		status = http.StatusNotImplemented
 	case errors.Is(err, agentpool.ErrAgentNotFound),
@@ -340,6 +342,7 @@ func interactionError(c echo.Context, err error) error {
 
 // ChatWithAgentEndpoint sends a message to an agent conversation.
 // @Summary Chat with an agent
+// @Description Embedded root jobs add a durable job_id to the receipt; question answers and live-loop injections do not create jobs. Submission is not idempotent.
 // @Tags agents
 // @Accept json
 // @Produce json
@@ -352,6 +355,7 @@ func interactionError(c echo.Context, err error) error {
 // @Failure 409 {object} map[string]string
 // @Failure 500 {object} map[string]string
 // @Failure 501 {object} map[string]string
+// @Failure 503 {object} map[string]string
 // @Router /api/agents/{name}/chat [post]
 func ChatWithAgentEndpoint(app *application.Application) echo.HandlerFunc {
 	return func(c echo.Context) error {

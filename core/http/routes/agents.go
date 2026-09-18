@@ -42,6 +42,7 @@ func RegisterAgentPoolRoutes(e *echo.Echo, app *application.Application,
 	ag.GET("/:name/observables", localai.GetAgentObservablesEndpoint(app))
 	ag.DELETE("/:name/observables", localai.ClearAgentObservablesEndpoint(app))
 	ag.POST("/:name/chat", localai.ChatWithAgentEndpoint(app))
+	ag.GET("/:name/jobs/:job_id", localai.GetAgentChatJobEndpoint(app))
 	ag.POST("/:name/answer", localai.AnswerAgentQuestionEndpoint(app))
 	ag.POST("/:name/plan", localai.DecideAgentPlanEndpoint(app))
 	ag.GET("/:name/pending", localai.PendingAgentInteractionsEndpoint(app))

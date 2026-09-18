@@ -22,6 +22,7 @@ func (e *PendingQuestionError) Error() string { return interactions.ErrFreeTextN
 func (e *PendingQuestionError) Unwrap() error { return interactions.ErrFreeTextNotAllowed }
 
 type ChatReceipt struct {
+	JobID      string `json:"job_id,omitempty"`
 	Status     string `json:"status"`
 	MessageID  string `json:"message_id,omitempty"`
 	QuestionID string `json:"question_id,omitempty"`
@@ -69,10 +70,9 @@ func (s *AgentPoolService) chatInConversation(key, message, conversationID strin
 	if handled, err := ag.InjectChat(conversationID, message, messageID); handled {
 		return receipt, err
 	}
-	go runAgentChat(ag, message, conversationID, messageID, manager.Send, func(result *coreTypes.JobResult, elapsed time.Duration) map[string]any {
+	return s.startDurableChat(ag, key, message, conversationID, messageID, manager.Send, func(result *coreTypes.JobResult, elapsed time.Duration) map[string]any {
 		return s.decorateChatResponse(key, message, result, elapsed)
 	})
-	return receipt, nil
 }
 
 func (s *AgentPoolService) interactionRegistryForUser(userID, name string) (*interactions.Registry, error) {
